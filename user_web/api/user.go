@@ -1,31 +1,26 @@
 package api
 
 import (
+	"api/user_web/forms"
 	"api/user_web/global"
 	"api/user_web/global/response"
+	"api/user_web/middlewares"
+	"api/user_web/models"
 	"api/user_web/proto"
 	"context"
 	"fmt"
+	"github.com/dgrijalva/jwt-go"
 	"github.com/gin-gonic/gin"
-	"github.com/gin-gonic/gin/binding"
-	"github.com/go-playground/locales/en"
-	"github.com/go-playground/locales/zh"
-	ut "github.com/go-playground/universal-translator"
 	"github.com/go-playground/validator/v10"
-	en_translations "github.com/go-playground/validator/v10/translations/en"
-	zh_translations "github.com/go-playground/validator/v10/translations/zh"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"net/http"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
 )
-
-var trans ut.Translator
 
 func HandleGrpcErrorToHttp(err error, c *gin.Context) {
 	//将grpc的code转换成http的状态码
@@ -50,7 +45,7 @@ func HandleGrpcErrorToHttp(err error, c *gin.Context) {
 				})
 			default:
 				c.JSON(http.StatusInternalServerError, gin.H{
-					"msg": e.Code(),
+					"error": e.Code(),
 				})
 			}
 			return
@@ -67,6 +62,10 @@ func GetUserList(ctx *gin.Context) {
 	if err != nil {
 		zap.S().Errorw("[GetUserList]连接用户GRPC服务失败", "msg", err.Error())
 	}
+	claims, _ := ctx.Get("claims") //interface{}类型
+	currentUser := claims.(*models.CustomClaims)
+	zap.S().Infof("访问用户ID：%d", currentUser.ID)
+
 	//pn和psize可以代进query里面 由ctx取到
 	pn := ctx.DefaultQuery("pn", "0")
 	pSize := ctx.DefaultQuery("psize", "0")
@@ -113,41 +112,171 @@ func removeTopStruct(fileds map[string]string) map[string]string {
 	return rsp
 }
 
-func InitTrans(locale string) (err error) {
-	//修改gin框架中的validator引擎属性, 实现定制
-	if v, ok := binding.Validator.Engine().(*validator.Validate); ok {
-		//注册一个获取json的tag的自定义方法
-		v.RegisterTagNameFunc(func(fld reflect.StructField) string {
-			name := strings.SplitN(fld.Tag.Get("json"), ",", 2)[0]
-			if name == "-" {
-				return ""
-			}
-			return name
-		})
-
-		zhT := zh.New() //中文翻译器
-		enT := en.New() //英文翻译器
-		//第一个参数是备用的语言环境，后面的参数是应该支持的语言环境
-		uni := ut.New(enT, zhT, enT)
-		trans, ok = uni.GetTranslator(locale)
+func PassWordLogin(ctx *gin.Context) {
+	var loginForm forms.PassWordLoginForm
+	if err := ctx.ShouldBind(&loginForm); err != nil {
+		errs, ok := err.(validator.ValidationErrors) //将error强制转换为validationerror类型
 		if !ok {
-			return fmt.Errorf("uni.GetTranslator(%s)", locale)
+			ctx.JSON(http.StatusInternalServerError, gin.H{
+				"msg": err.Error(),
+			})
 		}
-
-		switch locale {
-		case "en":
-			en_translations.RegisterDefaultTranslations(v, trans)
-		case "zh":
-			zh_translations.RegisterDefaultTranslations(v, trans)
-		default:
-			en_translations.RegisterDefaultTranslations(v, trans)
-		}
+		ctx.JSON(http.StatusBadRequest, gin.H{
+			"error": removeTopStruct(errs.Translate(global.Trans)), //让error可以发中文
+		})
+		return
+	}
+	//连接grpc服务前处理验证码
+	if !store.Verify(loginForm.CaptchaId, loginForm.Captcha, true) {
+		ctx.JSON(http.StatusBadRequest, gin.H{
+			"captcha": "验证码错误",
+		})
 		return
 	}
 
+	ip := global.ServerFromConfig.UserInfo.Host
+	port := global.ServerFromConfig.UserInfo.Port
+	//拨号建立连接
+	userConn, err := grpc.Dial(fmt.Sprintf("%s:%d", ip, port), grpc.WithInsecure())
+	if err != nil {
+		zap.S().Errorw("[GetUserList]连接用户GRPC服务失败", "msg", err.Error())
+	}
+	userSvcClient := proto.NewUserClient(userConn)
+	if rsp, err := userSvcClient.GetUserByMobile(context.Background(), &proto.MobileRequest{
+		Mobile: loginForm.Mobile,
+	}); err != nil { //没找到的情况下 报的error
+		if e, ok := status.FromError(err); ok {
+			switch e.Code() {
+			case codes.NotFound:
+				ctx.JSON(http.StatusBadRequest, gin.H{
+					"msg": "该用户不存在",
+				})
+			default:
+				ctx.JSON(http.StatusInternalServerError, gin.H{
+					"msg": "出错了",
+				})
+
+			}
+		}
+	} else { //查询到用户之后处理密码校验
+		if passRsp, passErr := userSvcClient.CheckPassWord(context.Background(), &proto.PasswordCheckInfo{
+			Password:          loginForm.PassWord,
+			EncryptedPassword: rsp.PassWord,
+		}); passErr != nil {
+			ctx.JSON(http.StatusInternalServerError, gin.H{
+				"msg": "登陆失败",
+			})
+		} else {
+			if passRsp.Success {
+				//登录完成后生成jwt的token
+				jsonWebToken := middlewares.NewJWT()
+				claims := models.CustomClaims{ //生成token的一些参数
+					ID:          uint(rsp.Id),
+					NickName:    rsp.NickName,
+					AuthorityId: uint(rsp.Role),
+					StandardClaims: jwt.StandardClaims{
+						NotBefore: time.Now().Unix(),               //签名生效时间
+						ExpiresAt: time.Now().Unix() + 60*60*24*30, //单位是秒 30天后过期
+						Issuer:    "runzheng",
+					},
+				}
+				token, err := jsonWebToken.CreateToken(claims)
+				if err != nil {
+					ctx.JSON(http.StatusInternalServerError, map[string]string{
+						"msg": "生成token失败",
+					})
+					return
+				}
+				//zap.S().Error(token)
+				ctx.JSON(http.StatusOK, gin.H{
+					"msg": "登陆成功",
+					//"id":         rsp.Id,
+					//"nickname":   rsp.NickName,
+					"data":       rsp,
+					"token":      token,
+					"expired_at": (time.Now().Unix() + 60*60*24*30) * 1000, //ms
+
+				})
+
+			} else {
+				ctx.JSON(http.StatusBadRequest, map[string]string{
+					"msg": "密码错误",
+				})
+			}
+
+		}
+	}
+
 	return
+
 }
 
-func PassWordLogin(ctx *gin.Context) {
+func Register(ctx *gin.Context) {
+	var registerForm forms.RegisterForm
+	if err := ctx.ShouldBind(&registerForm); err != nil {
+		errs, ok := err.(validator.ValidationErrors) //将error强制转换为validationerror类型
+		if !ok {
+			ctx.JSON(http.StatusInternalServerError, gin.H{
+				"msg": err.Error(),
+			})
+		}
+		ctx.JSON(http.StatusBadRequest, gin.H{
+			"error": removeTopStruct(errs.Translate(global.Trans)), //让error可以发中文
+		})
+		return
+	}
+	//验证码处理逻辑：
+
+	//grpc调用
+	ip := global.ServerFromConfig.UserInfo.Host
+	port := global.ServerFromConfig.UserInfo.Port
+	//拨号建立连接
+	userConn, err := grpc.Dial(fmt.Sprintf("%s:%d", ip, port), grpc.WithInsecure())
+	if err != nil {
+		zap.S().Errorw("[Register]连接用户GRPC服务失败", "msg", err.Error())
+	}
+	userSvcClient := proto.NewUserClient(userConn)
+	rsp, err := userSvcClient.CreateUser(context.Background(), &proto.CreateUserInfo{
+		Mobile:   registerForm.Mobile,
+		PassWord: registerForm.PassWord,
+		NickName: "bobby" + registerForm.Mobile[6:],
+	})
+	if err != nil {
+		zap.S().Errorf("[Register]【新建用户失败】失败: %s", err.Error())
+		ctx.JSON(http.StatusInternalServerError, gin.H{
+			"msg": err.Error(),
+		})
+		//HandleGrpcErrorToHttp(err, ctx)
+		return
+	}
+	jsonWebToken := middlewares.NewJWT()
+	claims := models.CustomClaims{ //生成token的一些参数
+		ID:          uint(rsp.Id),
+		NickName:    rsp.NickName,
+		AuthorityId: uint(rsp.Role),
+		StandardClaims: jwt.StandardClaims{
+			NotBefore: time.Now().Unix(),               //签名生效时间
+			ExpiresAt: time.Now().Unix() + 60*60*24*30, //单位是秒 30天后过期
+			Issuer:    "runzheng",
+		},
+	}
+	token, err := jsonWebToken.CreateToken(claims)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, map[string]string{
+			"msg": "生成token失败",
+		})
+		return
+	}
+	//zap.S().Error(token)
+	ctx.JSON(http.StatusOK, gin.H{
+		"msg": "注册成功",
+		//"id":         rsp.Id,
+		//"nickname":   rsp.NickName,
+		"data":       rsp,
+		"token":      token,
+		"expired_at": (time.Now().Unix() + 60*60*24*30) * 1000, //ms
+
+	})
+	return
 
 }
