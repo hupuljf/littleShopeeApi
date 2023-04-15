@@ -2,6 +2,7 @@ package global
 
 import (
 	"api/user_web/config"
+	"api/user_web/proto"
 	ut "github.com/go-playground/universal-translator"
 )
 
@@ -9,4 +10,5 @@ import (
 var (
 	ServerFromConfig = &config.ServerConfig{}
 	Trans            ut.Translator
+	UserSrvClient    proto.UserClient
 )

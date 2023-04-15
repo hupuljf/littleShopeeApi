@@ -3,6 +3,7 @@ package main
 import (
 	"api/user_web/global"
 	"api/user_web/initialize"
+	"api/user_web/utils"
 	validator2 "api/user_web/validator"
 	"fmt"
 	"github.com/gin-gonic/gin/binding"
@@ -15,6 +16,7 @@ func main() {
 	//port := 8021
 	initialize.InitLogger()
 	initialize.InitConfig()
+	initialize.InitUserClient() //连接后台微服务的客户端
 	//初始化翻译
 	if err := initialize.InitTrans("zh"); err != nil {
 		zap.S().Errorf("初始化错误翻译器错误 %s", err.Error())
@@ -37,6 +39,12 @@ func main() {
 	*/
 	//logger, _ := zap.NewProduction()
 	//zap.ReplaceGlobals(logger)
+	//zap.S().Infof("启动服务器，端口：%d", global.ServerFromConfig.Port)
+
+	//如果env是pro 就用随机端口(修改初始化配置中的port)：
+	if initialize.GetEnvInfo("CONFIG") != "test" {
+		global.ServerFromConfig.Port, _ = utils.GetFreePort()
+	}
 	zap.S().Infof("启动服务器，端口：%d", global.ServerFromConfig.Port)
 	if err := r.Run(fmt.Sprintf(":%d", global.ServerFromConfig.Port)); err != nil {
 		//err.Error()才有值

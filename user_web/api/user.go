@@ -13,7 +13,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"net/http"
@@ -54,14 +53,7 @@ func HandleGrpcErrorToHttp(err error, c *gin.Context) {
 }
 
 func GetUserList(ctx *gin.Context) {
-	zap.S().Debug("获取用户列表页")
-	ip := global.ServerFromConfig.UserInfo.Host
-	port := global.ServerFromConfig.UserInfo.Port
-	//拨号建立连接
-	userConn, err := grpc.Dial(fmt.Sprintf("%s:%d", ip, port), grpc.WithInsecure())
-	if err != nil {
-		zap.S().Errorw("[GetUserList]连接用户GRPC服务失败", "msg", err.Error())
-	}
+
 	claims, _ := ctx.Get("claims") //interface{}类型
 	currentUser := claims.(*models.CustomClaims)
 	zap.S().Infof("访问用户ID：%d", currentUser.ID)
@@ -72,8 +64,8 @@ func GetUserList(ctx *gin.Context) {
 	pnInt, _ := strconv.Atoi(pn)
 	pSizeInt, _ := strconv.Atoi(pSize)
 	//建立一个客户端访问grpc服务
-	userSvcClient := proto.NewUserClient(userConn)
-	rsp, err := userSvcClient.GetUserList(context.Background(), &proto.PageInfo{
+	//userSvcClient := proto.NewUserClient(userConn)
+	rsp, err := global.UserSrvClient.GetUserList(context.Background(), &proto.PageInfo{
 		Pn:    uint32(pnInt),
 		PSize: uint32(pSizeInt),
 	})
@@ -134,17 +126,11 @@ func PassWordLogin(ctx *gin.Context) {
 		return
 	}
 
-	ip := global.ServerFromConfig.UserInfo.Host
-	port := global.ServerFromConfig.UserInfo.Port
-	//拨号建立连接
-	userConn, err := grpc.Dial(fmt.Sprintf("%s:%d", ip, port), grpc.WithInsecure())
-	if err != nil {
-		zap.S().Errorw("[GetUserList]连接用户GRPC服务失败", "msg", err.Error())
-	}
-	userSvcClient := proto.NewUserClient(userConn)
+	userSvcClient := global.UserSrvClient
 	if rsp, err := userSvcClient.GetUserByMobile(context.Background(), &proto.MobileRequest{
 		Mobile: loginForm.Mobile,
 	}); err != nil { //没找到的情况下 报的error
+		fmt.Println(err.Error())
 		if e, ok := status.FromError(err); ok {
 			switch e.Code() {
 			case codes.NotFound:
@@ -228,14 +214,7 @@ func Register(ctx *gin.Context) {
 	//验证码处理逻辑：
 
 	//grpc调用
-	ip := global.ServerFromConfig.UserInfo.Host
-	port := global.ServerFromConfig.UserInfo.Port
-	//拨号建立连接
-	userConn, err := grpc.Dial(fmt.Sprintf("%s:%d", ip, port), grpc.WithInsecure())
-	if err != nil {
-		zap.S().Errorw("[Register]连接用户GRPC服务失败", "msg", err.Error())
-	}
-	userSvcClient := proto.NewUserClient(userConn)
+	userSvcClient := global.UserSrvClient
 	rsp, err := userSvcClient.CreateUser(context.Background(), &proto.CreateUserInfo{
 		Mobile:   registerForm.Mobile,
 		PassWord: registerForm.PassWord,

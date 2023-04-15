@@ -2,9 +2,13 @@ name: 'user-web'
 port: 8021
 user_srv:
   ip: '0.0.0.0'
-  port: 50051
+  port: 50051 #这个东西用随机端口 直接通过名字进行服务发现
+  name: 'usr_srv'
 jwt:
   key:
     "TlqlNSqP?$pMLZ}GG{G`7/.R@!WQ4:(O"
+consul:
+  host: 'localhost'
+  port: 8500
 
 
