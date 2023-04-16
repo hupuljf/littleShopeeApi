@@ -1,0 +1,5 @@
+name: 'goods-web'
+port: 8021
+goods_srv:
+  ip: '127.0.0.1'
+  port: 50051
