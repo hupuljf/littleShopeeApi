@@ -136,3 +136,7 @@ func GetGoodsList(ctx *gin.Context) { //从请求的参数中获取filter信息 
 	ctx.JSON(http.StatusOK, reMap)
 
 }
+
+func NewGoods(ctx *gin.Context) {
+
+}

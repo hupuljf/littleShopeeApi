@@ -15,6 +15,7 @@ require (
 	github.com/hashicorp/go-hclog v1.4.0 // indirect
 	github.com/mbobakov/grpc-consul-resolver v1.4.4
 	github.com/mojocn/base64Captcha v1.3.5
+	github.com/satori/go.uuid v1.2.0
 	github.com/spf13/viper v1.15.0
 	go.uber.org/zap v1.24.0
 	golang.org/x/image v0.6.0 // indirect

@@ -1,7 +1,6 @@
 package consul
 
 import (
-	"api/goods_web/global"
 	"fmt"
 	"github.com/hashicorp/consul/api"
 )
@@ -9,7 +8,8 @@ import (
 type Registry struct {
 	Host string
 	Port int
-}
+} //consul的host和port
+
 type RegistryClient interface {
 	Register(address string, port int, name string, tags []string, id string) error
 	DeRegister(serviceId string) error
@@ -24,7 +24,7 @@ func NewRegistry(host string, port int) RegistryClient {
 
 func (r *Registry) Register(address string, port int, name string, tags []string, id string) error {
 	cfg := api.DefaultConfig()
-	cfg.Address = fmt.Sprintf("%s:%d", global.ServerFromConfig.ConsulInfo.Host, global.ServerFromConfig.ConsulInfo.Port)
+	cfg.Address = fmt.Sprintf("%s:%d", r.Host, r.Port)
 
 	client, err := api.NewClient(cfg)
 	if err != nil {
@@ -32,10 +32,10 @@ func (r *Registry) Register(address string, port int, name string, tags []string
 	}
 	//生成对应的检查对象
 	check := &api.AgentServiceCheck{
-		HTTP:                           fmt.Sprintf("http://%s:%d/g/v1/goods/health", r.Host, r.Port), //得用本机地址
+		HTTP:                           fmt.Sprintf("http://%s:%d/g/v1/goods/health", address, port),
 		Timeout:                        "5s",
 		Interval:                       "5s",
-		DeregisterCriticalServiceAfter: "10m",
+		DeregisterCriticalServiceAfter: "10000s",
 	}
 
 	//生成注册对象
@@ -48,7 +48,6 @@ func (r *Registry) Register(address string, port int, name string, tags []string
 	registration.Check = check
 
 	err = client.Agent().ServiceRegister(registration)
-	//client.Agent().ServiceDeregister() //注销服务
 	if err != nil {
 		panic(err)
 	}
@@ -56,6 +55,13 @@ func (r *Registry) Register(address string, port int, name string, tags []string
 }
 
 func (r *Registry) DeRegister(serviceId string) error {
-	return nil
+	cfg := api.DefaultConfig()
+	cfg.Address = fmt.Sprintf("%s:%d", r.Host, r.Port)
 
+	client, err := api.NewClient(cfg)
+	if err != nil {
+		return err
+	}
+	err = client.Agent().ServiceDeregister(serviceId)
+	return err
 }
